@@ -4,17 +4,20 @@ import (
 	"image"
 	"image/color"
 	"math"
+
+	"github.com/kovidgoyal/imaging/nrgba"
 )
 
 // Grayscale produces a grayscale version of the image.
 func Grayscale(img image.Image) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
-	parallel(0, src.h, func(ys <-chan int) {
-		for y := range ys {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := y * dst.Stride
-			src.scan(0, y, src.w, y+1, dst.Pix[i:i+src.w*4])
-			for x := 0; x < src.w; x++ {
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+w*4])
+			for range w {
 				d := dst.Pix[i : i+3 : i+3]
 				r := d[0]
 				g := d[1]
@@ -27,19 +30,22 @@ func Grayscale(img image.Image) *image.NRGBA {
 				i += 4
 			}
 		}
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
 // Invert produces an inverted (negated) version of the image.
 func Invert(img image.Image) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
-	parallel(0, src.h, func(ys <-chan int) {
-		for y := range ys {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := y * dst.Stride
-			src.scan(0, y, src.w, y+1, dst.Pix[i:i+src.w*4])
-			for x := 0; x < src.w; x++ {
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+w*4])
+			for range w {
 				d := dst.Pix[i : i+3 : i+3]
 				d[0] = 255 - d[0]
 				d[1] = 255 - d[1]
@@ -47,7 +53,9 @@ func Invert(img image.Image) *image.NRGBA {
 				i += 4
 			}
 		}
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
@@ -58,9 +66,9 @@ func Invert(img image.Image) *image.NRGBA {
 // The percentage = -100 gives the image with the saturation value zeroed for each pixel (grayscale).
 //
 // Examples:
-//  dstImage = imaging.AdjustSaturation(srcImage, 25) // Increase image saturation by 25%.
-//  dstImage = imaging.AdjustSaturation(srcImage, -10) // Decrease image saturation by 10%.
 //
+//	dstImage = imaging.AdjustSaturation(srcImage, 25) // Increase image saturation by 25%.
+//	dstImage = imaging.AdjustSaturation(srcImage, -10) // Decrease image saturation by 10%.
 func AdjustSaturation(img image.Image, percentage float64) *image.NRGBA {
 	if percentage == 0 {
 		return Clone(img)
@@ -85,9 +93,9 @@ func AdjustSaturation(img image.Image, percentage float64) *image.NRGBA {
 // The shift = 180 (or -180) corresponds to a 180° degree rotation of the color wheel and thus gives the image with its hue inverted for each pixel.
 //
 // Examples:
-//  dstImage = imaging.AdjustHue(srcImage, 90) // Shift Hue by 90°.
-//  dstImage = imaging.AdjustHue(srcImage, -30) // Shift Hue by -30°.
 //
+//	dstImage = imaging.AdjustHue(srcImage, 90) // Shift Hue by 90°.
+//	dstImage = imaging.AdjustHue(srcImage, -30) // Shift Hue by -30°.
 func AdjustHue(img image.Image, shift float64) *image.NRGBA {
 	if math.Mod(shift, 360) == 0 {
 		return Clone(img)
@@ -116,7 +124,6 @@ func AdjustHue(img image.Image, shift float64) *image.NRGBA {
 //
 //	dstImage = imaging.AdjustContrast(srcImage, -10) // Decrease image contrast by 10%.
 //	dstImage = imaging.AdjustContrast(srcImage, 20) // Increase image contrast by 20%.
-//
 func AdjustContrast(img image.Image, percentage float64) *image.NRGBA {
 	if percentage == 0 {
 		return Clone(img)
@@ -126,7 +133,7 @@ func AdjustContrast(img image.Image, percentage float64) *image.NRGBA {
 	lut := make([]uint8, 256)
 
 	v := (100.0 + percentage) / 100.0
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		switch {
 		case 0 <= v && v <= 1:
 			lut[i] = clamp((0.5 + (float64(i)/255.0-0.5)*v) * 255.0)
@@ -148,7 +155,6 @@ func AdjustContrast(img image.Image, percentage float64) *image.NRGBA {
 //
 //	dstImage = imaging.AdjustBrightness(srcImage, -15) // Decrease image brightness by 15%.
 //	dstImage = imaging.AdjustBrightness(srcImage, 10) // Increase image brightness by 10%.
-//
 func AdjustBrightness(img image.Image, percentage float64) *image.NRGBA {
 	if percentage == 0 {
 		return Clone(img)
@@ -158,7 +164,7 @@ func AdjustBrightness(img image.Image, percentage float64) *image.NRGBA {
 	lut := make([]uint8, 256)
 
 	shift := 255.0 * percentage / 100.0
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		lut[i] = clamp(float64(i) + shift)
 	}
 
@@ -172,7 +178,6 @@ func AdjustBrightness(img image.Image, percentage float64) *image.NRGBA {
 // Example:
 //
 //	dstImage = imaging.AdjustGamma(srcImage, 0.7)
-//
 func AdjustGamma(img image.Image, gamma float64) *image.NRGBA {
 	if gamma == 1 {
 		return Clone(img)
@@ -181,7 +186,7 @@ func AdjustGamma(img image.Image, gamma float64) *image.NRGBA {
 	e := 1.0 / math.Max(gamma, 0.0001)
 	lut := make([]uint8, 256)
 
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		lut[i] = clamp(math.Pow(float64(i)/255.0, e) * 255.0)
 	}
 
@@ -198,7 +203,6 @@ func AdjustGamma(img image.Image, gamma float64) *image.NRGBA {
 //
 //	dstImage = imaging.AdjustSigmoid(srcImage, 0.5, 3.0) // Increase the contrast.
 //	dstImage = imaging.AdjustSigmoid(srcImage, 0.5, -3.0) // Decrease the contrast.
-//
 func AdjustSigmoid(img image.Image, midpoint, factor float64) *image.NRGBA {
 	if factor == 0 {
 		return Clone(img)
@@ -212,14 +216,14 @@ func AdjustSigmoid(img image.Image, midpoint, factor float64) *image.NRGBA {
 	e := 1.0e-6
 
 	if factor > 0 {
-		for i := 0; i < 256; i++ {
+		for i := range 256 {
 			x := float64(i) / 255.0
 			sigX := sigmoid(a, b, x)
 			f := (sigX - sig0) / (sig1 - sig0)
 			lut[i] = clamp(f * 255.0)
 		}
 	} else {
-		for i := 0; i < 256; i++ {
+		for i := range 256 {
 			x := float64(i) / 255.0
 			arg := math.Min(math.Max((sig1-sig0)*x+sig0, e), 1.0-e)
 			f := a - math.Log(1.0/arg-1.0)/b
@@ -236,14 +240,15 @@ func sigmoid(a, b, x float64) float64 {
 
 // adjustLUT applies the given lookup table to the colors of the image.
 func adjustLUT(img image.Image, lut []uint8) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	lut = lut[0:256]
-	parallel(0, src.h, func(ys <-chan int) {
-		for y := range ys {
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := y * dst.Stride
-			src.scan(0, y, src.w, y+1, dst.Pix[i:i+src.w*4])
-			for x := 0; x < src.w; x++ {
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+w*4])
+			for range w {
 				d := dst.Pix[i : i+3 : i+3]
 				d[0] = lut[d[0]]
 				d[1] = lut[d[1]]
@@ -251,7 +256,9 @@ func adjustLUT(img image.Image, lut []uint8) *image.NRGBA {
 				i += 4
 			}
 		}
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
@@ -270,15 +277,15 @@ func adjustLUT(img image.Image, lut []uint8) *image.NRGBA {
 //			return color.NRGBA{uint8(r), c.G, c.B, c.A}
 //		}
 //	)
-//
 func AdjustFunc(img image.Image, fn func(c color.NRGBA) color.NRGBA) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
-	parallel(0, src.h, func(ys <-chan int) {
-		for y := range ys {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := y * dst.Stride
-			src.scan(0, y, src.w, y+1, dst.Pix[i:i+src.w*4])
-			for x := 0; x < src.w; x++ {
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+w*4])
+			for range w {
 				d := dst.Pix[i : i+4 : i+4]
 				r := d[0]
 				g := d[1]
@@ -292,6 +299,8 @@ func AdjustFunc(img image.Image, fn func(c color.NRGBA) color.NRGBA) *image.NRGB
 				i += 4
 			}
 		}
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 	return dst
 }

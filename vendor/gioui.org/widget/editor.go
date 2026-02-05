@@ -929,7 +929,7 @@ func (e *Editor) replace(start, end int, s string, addHistory bool) int {
 	if addHistory {
 		deleted := make([]rune, 0, replaceSize)
 		readPos := e.text.ByteOffset(start)
-		for i := 0; i < replaceSize; i++ {
+		for range replaceSize {
 			ru, s, _ := e.text.ReadRuneAt(int64(readPos))
 			readPos += int64(s)
 			deleted = append(deleted, ru)
@@ -1021,7 +1021,7 @@ func (e *Editor) deleteWord(distance int) (deletedRunes int) {
 		return r
 	}
 	runes := 1
-	for ii := 0; ii < words; ii++ {
+	for range words {
 		r := next(runes)
 		wantSpace := unicode.IsSpace(r)
 		for r := next(runes); unicode.IsSpace(r) == wantSpace && !atEnd(runes); r = next(runes) {
@@ -1091,20 +1091,6 @@ func (e *Editor) Read(p []byte) (int, error) {
 func (e *Editor) Regions(start, end int, regions []Region) []Region {
 	e.initBuffer()
 	return e.text.Regions(start, end, regions)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func abs(n int) int {

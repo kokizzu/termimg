@@ -2,10 +2,18 @@ package imaging
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"math"
+	"slices"
+
+	"github.com/kovidgoyal/imaging/nrgb"
+	"github.com/kovidgoyal/imaging/nrgba"
 )
+
+var _ = fmt.Println
 
 // New creates a new image with the specified width and height, and fills it with the specified color.
 func New(width, height int, fillColor color.Color) *image.NRGBA {
@@ -27,16 +35,217 @@ func New(width, height int, fillColor color.Color) *image.NRGBA {
 
 // Clone returns a copy of the given image.
 func Clone(img image.Image) *image.NRGBA {
-	src := newScanner(img)
-	dst := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
-	size := src.w * 4
-	parallel(0, src.h, func(ys <-chan int) {
-		for y := range ys {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	size := w * 4
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := y * dst.Stride
-			src.scan(0, y, src.w, y+1, dst.Pix[i:i+size])
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+size])
 		}
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 	return dst
+}
+
+func ClonePreservingOrigin(img image.Image) *image.NRGBA {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	src := nrgba.NewNRGBAScanner(img)
+	dst := image.NewNRGBA(img.Bounds())
+	size := w * 4
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
+			i := y * dst.Stride
+			src.Scan(0, y, w, y+1, dst.Pix[i:i+size])
+		}
+	}, 0, h); err != nil {
+		panic(err)
+	}
+	return dst
+}
+
+func AsNRGBA(src image.Image) *image.NRGBA {
+	if nrgba, ok := src.(*image.NRGBA); ok {
+		return nrgba
+	}
+	return ClonePreservingOrigin(src)
+}
+
+func AsNRGB(src image.Image) *NRGB {
+	if nrgb, ok := src.(*NRGB); ok {
+		return nrgb
+	}
+	sc := nrgb.NewNRGBScanner(src, nrgb.Color{})
+	dst := sc.NewImage(src.Bounds()).(*nrgb.Image)
+	w, h := src.Bounds().Dx(), src.Bounds().Dy()
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
+			sc.ScanRow(0, y, w, y+1, dst, y)
+		}
+	}, 0, h); err != nil {
+		panic(err)
+	}
+	return dst
+}
+
+// Clone an image preserving it's type for all known image types or returning an NRGBA64 image otherwise
+func ClonePreservingType(src image.Image) image.Image {
+	switch src := src.(type) {
+	case *image.RGBA:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.RGBA64:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.NRGBA:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *NRGB:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.NRGBA64:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.Gray:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.Gray16:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.Alpha:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.Alpha16:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.CMYK:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		return &dst
+	case *image.Paletted:
+		dst := *src
+		dst.Pix = slices.Clone(src.Pix)
+		dst.Palette = slices.Clone(src.Palette)
+		return &dst
+	case *image.YCbCr:
+		dst := *src
+		dst.Y = slices.Clone(src.Y)
+		dst.Cb = slices.Clone(src.Cb)
+		dst.Cr = slices.Clone(src.Cr)
+		return &dst
+	case *image.NYCbCrA:
+		dst := *src
+		dst.Y = slices.Clone(src.Y)
+		dst.Cb = slices.Clone(src.Cb)
+		dst.Cr = slices.Clone(src.Cr)
+		dst.A = slices.Clone(src.A)
+		return &dst
+	// For any other image type, fall back to a generic copy.
+	// This creates an NRGBA image, which may not be the original type,
+	// but ensures the image data is preserved.
+	default:
+		b := src.Bounds()
+		dst := image.NewNRGBA64(b)
+		draw.Draw(dst, b, src, b.Min, draw.Src)
+		return dst
+	}
+}
+
+// Ensure image has origin at (0, 0). Note that this destroys the original
+// image and returns a new image with the same data, but origin shifted.
+func NormalizeOrigin(src image.Image) image.Image {
+	r := src.Bounds()
+	if r.Min.X == 0 && r.Min.Y == 0 {
+		return src
+	}
+	r = image.Rect(0, 0, r.Dx(), r.Dy())
+	switch src := src.(type) {
+	case *image.RGBA:
+		dst := *src
+		*src = image.RGBA{}
+		dst.Rect = r
+		return &dst
+	case *image.RGBA64:
+		dst := *src
+		*src = image.RGBA64{}
+		dst.Rect = r
+		return &dst
+	case *image.NRGBA:
+		dst := *src
+		*src = image.NRGBA{}
+		dst.Rect = r
+		return &dst
+	case *NRGB:
+		dst := *src
+		*src = NRGB{}
+		dst.Rect = r
+		return &dst
+	case *image.NRGBA64:
+		dst := *src
+		*src = image.NRGBA64{}
+		dst.Rect = r
+		return &dst
+	case *image.Gray:
+		dst := *src
+		*src = image.Gray{}
+		dst.Rect = r
+		return &dst
+	case *image.Gray16:
+		dst := *src
+		*src = image.Gray16{}
+		dst.Rect = r
+		return &dst
+	case *image.Alpha:
+		dst := *src
+		*src = image.Alpha{}
+		dst.Rect = r
+		return &dst
+	case *image.Alpha16:
+		dst := *src
+		*src = image.Alpha16{}
+		dst.Rect = r
+		return &dst
+	case *image.CMYK:
+		dst := *src
+		*src = image.CMYK{}
+		dst.Rect = r
+		return &dst
+	case *image.Paletted:
+		dst := *src
+		*src = image.Paletted{}
+		dst.Rect = r
+		return &dst
+	case *image.YCbCr:
+		dst := *src
+		*src = image.YCbCr{}
+		dst.Rect = r
+		return &dst
+	case *image.NYCbCrA:
+		dst := *src
+		*src = image.NYCbCrA{}
+		dst.Rect = r
+		return &dst
+	// For any other image type, fall back to a generic copy.
+	// This creates an NRGBA image, which may not be the original type,
+	// but ensures the image data is preserved.
+	default:
+		b := src.Bounds()
+		dst := image.NewNRGBA64(b)
+		draw.Draw(dst, b, src, b.Min, draw.Src)
+		dst.Rect = r
+		return dst
+	}
 }
 
 // Anchor is the anchor point for image alignment.
@@ -100,15 +309,17 @@ func Crop(img image.Image, rect image.Rectangle) *image.NRGBA {
 		return Clone(img)
 	}
 
-	src := newScanner(img)
+	src := nrgba.NewNRGBAScanner(img)
 	dst := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	rowSize := r.Dx() * 4
-	parallel(r.Min.Y, r.Max.Y, func(ys <-chan int) {
-		for y := range ys {
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			i := (y - r.Min.Y) * dst.Stride
-			src.scan(r.Min.X, y, r.Max.X, y+1, dst.Pix[i:i+rowSize])
+			src.Scan(r.Min.X, y, r.Max.X, y+1, dst.Pix[i:i+rowSize])
 		}
-	})
+	}, r.Min.Y, r.Max.Y); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
@@ -141,18 +352,20 @@ func Paste(background, img image.Image, pos image.Point) *image.NRGBA {
 		return Clone(img)
 	}
 
-	src := newScanner(img)
-	parallel(interRect.Min.Y, interRect.Max.Y, func(ys <-chan int) {
-		for y := range ys {
+	src := nrgba.NewNRGBAScanner(img)
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
+		for y := start; y < limit; y++ {
 			x1 := interRect.Min.X - pasteRect.Min.X
 			x2 := interRect.Max.X - pasteRect.Min.X
 			y1 := y - pasteRect.Min.Y
 			y2 := y1 + 1
 			i1 := y*dst.Stride + interRect.Min.X*4
 			i2 := i1 + interRect.Dx()*4
-			src.scan(x1, y1, x2, y2, dst.Pix[i1:i2])
+			src.Scan(x1, y1, x2, y2, dst.Pix[i1:i2])
 		}
-	})
+	}, interRect.Min.Y, interRect.Max.Y); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
@@ -184,7 +397,6 @@ func PasteCenter(background, img image.Image) *image.NRGBA {
 //
 //	// Blend two opaque images of the same size.
 //	dstImage := imaging.Overlay(imageOne, imageTwo, image.Pt(0, 0), 0.5)
-//
 func Overlay(background, img image.Image, pos image.Point, opacity float64) *image.NRGBA {
 	opacity = math.Min(math.Max(opacity, 0.0), 1.0) // Ensure 0.0 <= opacity <= 1.0.
 	dst := Clone(background)
@@ -194,15 +406,15 @@ func Overlay(background, img image.Image, pos image.Point, opacity float64) *ima
 	if interRect.Empty() {
 		return dst
 	}
-	src := newScanner(img)
-	parallel(interRect.Min.Y, interRect.Max.Y, func(ys <-chan int) {
+	src := nrgba.NewNRGBAScanner(img)
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
 		scanLine := make([]uint8, interRect.Dx()*4)
-		for y := range ys {
+		for y := start; y < limit; y++ {
 			x1 := interRect.Min.X - pasteRect.Min.X
 			x2 := interRect.Max.X - pasteRect.Min.X
 			y1 := y - pasteRect.Min.Y
 			y2 := y1 + 1
-			src.scan(x1, y1, x2, y2, scanLine)
+			src.Scan(x1, y1, x2, y2, scanLine)
 			i := y*dst.Stride + interRect.Min.X*4
 			j := 0
 			for x := interRect.Min.X; x < interRect.Max.X; x++ {
@@ -233,7 +445,9 @@ func Overlay(background, img image.Image, pos image.Point, opacity float64) *ima
 				j += 4
 			}
 		}
-	})
+	}, interRect.Min.Y, interRect.Max.Y); err != nil {
+		panic(err)
+	}
 	return dst
 }
 
@@ -254,4 +468,55 @@ func OverlayCenter(background, img image.Image, opacity float64) *image.NRGBA {
 	y0 := centerY - img.Bounds().Dy()/2
 
 	return Overlay(background, img, image.Point{x0, y0}, opacity)
+}
+
+// Paste the image onto the specified background color.
+func PasteOntoBackground(img image.Image, bg color.Color) image.Image {
+	if IsOpaque(img) {
+		return img
+	}
+	_, _, _, a := bg.RGBA()
+	bg_is_opaque := a == 0xffff
+	var base draw.Image
+	if bg_is_opaque {
+		// use premult as its faster and will be converted to NRGB anyway
+		base = image.NewRGBA(img.Bounds())
+	} else {
+		base = image.NewNRGBA(img.Bounds())
+	}
+	bgi := image.NewUniform(bg)
+	draw.Draw(base, base.Bounds(), bgi, image.Point{}, draw.Src)
+	draw.Draw(base, base.Bounds(), img, img.Bounds().Min, draw.Over)
+	if bg_is_opaque {
+		return AsNRGB(base)
+	}
+	return base
+}
+
+// Return contiguous non-premultiplied RGB pixel data for this image with 8 bits per channel
+func AsRGBData8(img image.Image) (pix []uint8) {
+	b := img.Bounds()
+	n := AsNRGB(img)
+	if n.Stride == b.Dx()*3 {
+		return n.Pix
+	}
+	pix = make([]uint8, 0, b.Dx()*b.Dy()*3)
+	for y := range b.Dy() {
+		pix = append(pix, n.Pix[y*n.Stride:y*(n.Stride+1)]...)
+	}
+	return pix
+}
+
+// Return contiguous non-premultiplied RGBA pixel data for this image with 8 bits per channel
+func AsRGBAData8(img image.Image) (pix []uint8) {
+	b := img.Bounds()
+	n := AsNRGBA(img)
+	if n.Stride == b.Dx()*4 {
+		return n.Pix
+	}
+	pix = make([]uint8, 0, b.Dx()*b.Dy()*4)
+	for y := range b.Dy() {
+		pix = append(pix, n.Pix[y*n.Stride:y*(n.Stride+1)]...)
+	}
+	return pix
 }

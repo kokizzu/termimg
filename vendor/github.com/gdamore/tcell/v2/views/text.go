@@ -15,9 +15,8 @@
 package views
 
 import (
-	"github.com/mattn/go-runewidth"
-
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/uniseg"
 )
 
 // Text is a Widget with containing a block of text, which can optionally
@@ -40,9 +39,9 @@ func (t *Text) clear() {
 	v := t.view
 	w, h := v.Size()
 	v.Clear()
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			v.SetContent(x, y, ' ', nil, t.style)
+	for y := range h {
+		for x := range w {
+			v.Put(x, y, " ", t.style)
 		}
 	}
 }
@@ -184,7 +183,7 @@ func (t *Text) SetText(s string) {
 	t.lengths = []int{}
 	length := 0
 	for i, r := range t.text {
-		t.widths[i] = runewidth.RuneWidth(r)
+		t.widths[i] = uniseg.StringWidth(string(r))
 		t.styles[i] = t.style
 		if r == '\n' {
 			t.lengths = append(t.lengths, length)

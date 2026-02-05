@@ -142,8 +142,11 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 		if w.gpu == nil && !w.nocontext {
 			var err error
 			if w.ctx == nil {
-				w.ctx, err = w.driver.NewContext()
-				if err != nil {
+				if w.ctx, err = w.driver.NewContext(); err != nil {
+					return err
+				}
+				if err = w.ctx.Lock(); err != nil {
+					w.destroyGPU()
 					return err
 				}
 				sync = true
@@ -160,12 +163,6 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 				if errors.Is(err, gpu.ErrDeviceLost) {
 					continue
 				}
-				return err
-			}
-		}
-		if w.ctx != nil {
-			if err := w.ctx.Lock(); err != nil {
-				w.destroyGPU()
 				return err
 			}
 		}
@@ -200,7 +197,6 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 		var err error
 		if w.gpu != nil {
 			err = w.ctx.Present()
-			w.ctx.Unlock()
 		}
 		return err
 	}
@@ -444,10 +440,7 @@ func (c *callbacks) SetComposingRegion(r key.Range) {
 func (c *callbacks) EditorInsert(text string) {
 	sel := c.w.imeState.Selection.Range
 	c.EditorReplace(sel, text)
-	start := sel.Start
-	if sel.End < start {
-		start = sel.End
-	}
+	start := min(sel.End, sel.Start)
 	sel.Start = start + utf8.RuneCountInString(text)
 	sel.End = sel.Start
 	c.SetEditorSelection(sel)

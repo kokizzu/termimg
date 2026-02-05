@@ -385,28 +385,25 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		if !ok || mode == -1 {
 			break
 		}
-		value, _, ok := pa.Param(1, -1)
-		if !ok || value == -1 {
+		value, _, ok := pa.Param(1, 0)
+		if !ok {
 			break
 		}
 		return i, ModeReportEvent{Mode: ansi.DECMode(mode), Value: ansi.ModeSetting(value)}
 	case 'c' | '?'<<parser.PrefixShift:
 		// Primary Device Attributes
 		return i, parsePrimaryDevAttrs(pa)
+	case 'c' | '>'<<parser.PrefixShift:
+		// Secondary Device Attributes
+		return i, parseSecondaryDevAttrs(pa)
 	case 'u' | '?'<<parser.PrefixShift:
 		// Kitty keyboard flags
-		flags, _, ok := pa.Param(0, -1)
-		if !ok || flags == -1 {
-			break
-		}
-		return i, KittyEnhancementsEvent(flags)
+		flags, _, _ := pa.Param(0, -1)
+		return i, KeyboardEnhancementsEvent{flags}
 	case 'R' | '?'<<parser.PrefixShift:
 		// This report may return a third parameter representing the page
 		// number, but we don't really need it.
-		row, _, ok := pa.Param(0, 1)
-		if !ok {
-			break
-		}
+		row, _, _ := pa.Param(0, 1)
 		col, _, ok := pa.Param(1, 1)
 		if !ok {
 			break
@@ -427,7 +424,7 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		if !ok || val == -1 {
 			break
 		}
-		return i, ModifyOtherKeysEvent(val) //nolint:gosec
+		return i, ModifyOtherKeysEvent{val}
 	case 'n' | '?'<<parser.PrefixShift:
 		report, _, _ := pa.Param(0, -1)
 		darkLight, _, _ := pa.Param(1, -1)
@@ -488,12 +485,9 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 			k = KeyPressEvent{Code: KeyTab, Mod: ModShift}
 		}
 		id, _, _ := pa.Param(0, 1)
-		if id == 0 {
-			id = 1
-		}
 		mod, _, _ := pa.Param(1, 1)
-		if mod == 0 {
-			mod = 1
+		if paramsLen > 2 && !pa[1].HasMore() || id != 1 {
+			break
 		}
 		if paramsLen > 1 && id == 1 && mod != -1 {
 			// CSI 1 ; <modifiers> A
@@ -513,8 +507,8 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		if !ok || mode == -1 {
 			break
 		}
-		val, _, ok := pa.Param(1, -1)
-		if !ok || val == -1 {
+		val, _, ok := pa.Param(1, 0)
+		if !ok {
 			break
 		}
 		return i, ModeReportEvent{Mode: ansi.ANSIMode(mode), Value: ansi.ModeSetting(val)}
@@ -530,29 +524,20 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 			return i, UnknownCsiEvent(b[:i])
 		}
 
-		vrc, _, _ := pa.Param(5, 0)
-		rc := uint16(vrc) //nolint:gosec
-		if rc == 0 {
-			rc = 1
-		}
-
 		vk, _, _ := pa.Param(0, 0)
 		sc, _, _ := pa.Param(1, 0)
 		uc, _, _ := pa.Param(2, 0)
 		kd, _, _ := pa.Param(3, 0)
 		cs, _, _ := pa.Param(4, 0)
+		rc, _, _ := pa.Param(5, 0)
 		event := p.parseWin32InputKeyEvent(
-			uint16(vk), //nolint:gosec // Vk wVirtualKeyCode
-			uint16(sc), //nolint:gosec // Sc wVirtualScanCode
-			rune(uc),   // Uc UnicodeChar
-			kd == 1,    // Kd bKeyDown
-			uint32(cs), //nolint:gosec // Cs dwControlKeyState
-			rc,         // Rc wRepeatCount
+			uint16(vk),         //nolint:gosec // Vk wVirtualKeyCode
+			uint16(sc),         //nolint:gosec // Sc wVirtualScanCode
+			rune(uc),           // Uc UnicodeChar
+			kd == 1,            // Kd bKeyDown
+			uint32(cs),         //nolint:gosec // Cs dwControlKeyState
+			max(1, uint16(rc)), //nolint:gosec // Rc wRepeatCount
 		)
-
-		if event == nil {
-			return i, UnknownCsiEvent(b[:])
-		}
 
 		return i, event
 	case '@', '^', '~':
@@ -650,16 +635,16 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		}
 
 		switch param {
-		case 4: // Report Terminal pixel size.
+		case 4: // Report Terminal window size in pixels.
 			if paramsLen == 3 {
 				height, _, hOk := pa.Param(1, 0)
 				width, _, wOk := pa.Param(2, 0)
 				if !hOk || !wOk {
 					break
 				}
-				return i, WindowPixelSizeEvent{Width: width, Height: height}
+				return i, PixelSizeEvent{Width: width, Height: height}
 			}
-		case 6: // Report Terminal cell size.
+		case 6: // Report Terminal character cell size.
 			if paramsLen == 3 {
 				height, _, hOk := pa.Param(1, 0)
 				width, _, wOk := pa.Param(2, 0)
@@ -667,6 +652,15 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 					break
 				}
 				return i, CellSizeEvent{Width: width, Height: height}
+			}
+		case 8: // Report Terminal Window size in cells.
+			if paramsLen == 3 {
+				height, _, hOk := pa.Param(1, 0)
+				width, _, wOk := pa.Param(2, 0)
+				if !hOk || !wOk {
+					break
+				}
+				return i, WindowSizeEvent{Width: width, Height: height}
 			}
 		case 48: // In band terminal size report.
 			if paramsLen == 5 {
@@ -679,7 +673,7 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 				}
 				return i, MultiEvent{
 					WindowSizeEvent{Width: cellWidth, Height: cellHeight},
-					WindowPixelSizeEvent{Width: pixelWidth, Height: pixelHeight},
+					PixelSizeEvent{Width: pixelWidth, Height: pixelHeight},
 				}
 			}
 		}
@@ -848,17 +842,14 @@ func (p *EventDecoder) parseOsc(b []byte) (int, Event) {
 		return i, CursorColorEvent{ansi.XParseColor(data)}
 	case 52:
 		parts := strings.Split(data, ";")
-		if len(parts) == 0 {
-			return i, ClipboardEvent{}
-		}
 		if len(parts) != 2 || len(parts[0]) < 1 {
-			break
+			return i, ClipboardEvent{}
 		}
 
 		b64 := parts[1]
 		bts, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
-			break
+			return i, ClipboardEvent{Content: parts[1]}
 		}
 
 		sel := ClipboardSelection(parts[0][0]) //nolint:unconvert
@@ -1055,7 +1046,10 @@ func (p *EventDecoder) parseDcs(b []byte) (int, Event) {
 		}
 	case '|' | '>'<<parser.PrefixShift:
 		// XTVersion response
-		return i, TerminalVersionEvent(b[start:end])
+		return i, TerminalVersionEvent{string(b[start:end])}
+	case '|' | '!'<<parser.IntermedShift:
+		// Teritary Device Attributes
+		return i, parseTertiaryDevAttrs(b[start:end])
 	}
 
 	return i, UnknownDcsEvent(b[:i])
@@ -1559,6 +1553,27 @@ func parsePrimaryDevAttrs(params ansi.Params) Event {
 	return da1
 }
 
+func parseSecondaryDevAttrs(params ansi.Params) Event {
+	// Secondary Device Attributes
+	da2 := make(SecondaryDeviceAttributesEvent, len(params))
+	for i, p := range params {
+		if !p.HasMore() {
+			da2[i] = p.Param(0)
+		}
+	}
+	return da2
+}
+
+func parseTertiaryDevAttrs(b []byte) Event {
+	// Tertiary Device Attributes
+	// The response is a 4-digit hexadecimal number.
+	bts, err := hex.DecodeString(string(b))
+	if err != nil {
+		return UnknownDcsEvent(fmt.Sprintf("\x1bP!|%s\x1b\\", b))
+	}
+	return TertiaryDeviceAttributesEvent(bts)
+}
+
 // Parse SGR-encoded mouse events; SGR extended mouse events. SGR mouse events
 // look like:
 //
@@ -1777,7 +1792,7 @@ func isDarkColor(c color.Color) bool {
 func parseTermcap(data []byte) CapabilityEvent {
 	// XTGETTCAP
 	if len(data) == 0 {
-		return CapabilityEvent("")
+		return CapabilityEvent{""}
 	}
 
 	var tc strings.Builder
@@ -1785,7 +1800,7 @@ func parseTermcap(data []byte) CapabilityEvent {
 	for _, s := range split {
 		parts := bytes.SplitN(s, []byte{'='}, 2)
 		if len(parts) == 0 {
-			return CapabilityEvent("")
+			return CapabilityEvent{""}
 		}
 
 		name, err := hex.DecodeString(string(parts[0]))
@@ -1811,7 +1826,7 @@ func parseTermcap(data []byte) CapabilityEvent {
 		}
 	}
 
-	return CapabilityEvent(tc.String())
+	return CapabilityEvent{tc.String()}
 }
 
 // parseWin32InputKeyEvent converts a Windows Input Record Key Event into a

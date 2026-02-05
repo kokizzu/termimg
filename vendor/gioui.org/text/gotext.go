@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
@@ -16,7 +17,6 @@ import (
 	"github.com/go-text/typesetting/fontscan"
 	"github.com/go-text/typesetting/language"
 	"github.com/go-text/typesetting/shaping"
-	"golang.org/x/exp/slices"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/text/unicode/bidi"
 
@@ -54,13 +54,6 @@ func (l *document) reset() {
 	l.alignment = Start
 	l.alignWidth = 0
 	l.unreadRuneCount = 0
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // A line contains the measurements of a line of text.
@@ -356,7 +349,7 @@ func (s *shaperImpl) splitBidi(input shaping.Input) []shaping.Input {
 	if err != nil {
 		return []shaping.Input{input}
 	}
-	for i := 0; i < out.NumRuns(); i++ {
+	for i := range out.NumRuns() {
 		currentInput := input
 		run := out.Run(i)
 		dir := run.Direction()
@@ -685,7 +678,7 @@ func (s *shaperImpl) Shape(pathOps *op.Ops, gs []Glyph) clip.PathSpec {
 					nargs = 3
 				}
 				var args [3]f32.Point
-				for i := 0; i < nargs; i++ {
+				for i := range nargs {
 					a := f32.Point{
 						X: fseg.Args[i].X * scaleFactor,
 						Y: -fseg.Args[i].Y * scaleFactor,
@@ -767,7 +760,7 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 				imgOp = bitmapData.img
 				imgSize = bitmapData.size
 			}
-			off := op.Affine(f32.Affine2D{}.Offset(f32.Point{
+			off := op.Affine(f32.AffineId().Offset(f32.Point{
 				X: fixedToFloat((g.X - x) - g.Offset.X),
 				Y: fixedToFloat(g.Offset.Y + g.Bounds.Min.Y),
 			})).Push(ops)
@@ -783,7 +776,7 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 					Y: g.Bounds.Max.Y.Round(),
 				},
 			}.Size()
-			aff := op.Affine(f32.Affine2D{}.Scale(f32.Point{}, f32.Point{
+			aff := op.Affine(f32.AffineId().Scale(f32.Point{}, f32.Point{
 				X: float32(glyphSize.X) / float32(imgSize.X),
 				Y: float32(glyphSize.Y) / float32(imgSize.Y),
 			})).Push(ops)

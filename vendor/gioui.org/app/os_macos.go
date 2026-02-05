@@ -40,8 +40,9 @@ import (
 #define MOUSE_SCROLL 4
 
 __attribute__ ((visibility ("hidden"))) void gio_main(void);
+__attribute__ ((visibility ("hidden"))) void gio_init(void);
 __attribute__ ((visibility ("hidden"))) CFTypeRef gio_createView(int presentWithTrans);
-__attribute__ ((visibility ("hidden"))) CFTypeRef gio_createWindow(CFTypeRef viewRef, CGFloat width, CGFloat height, CGFloat minWidth, CGFloat minHeight, CGFloat maxWidth, CGFloat maxHeight);
+__attribute__ ((visibility ("hidden"))) CFTypeRef gio_createWindow(CFTypeRef viewRef, CGFloat width, CGFloat height);
 __attribute__ ((visibility ("hidden"))) void gio_viewSetHandle(CFTypeRef viewRef, uintptr_t handle);
 
 static void writeClipboard(CFTypeRef str) {
@@ -192,6 +193,7 @@ static void setMaxSize(CFTypeRef windowRef, CGFloat width, CGFloat height) {
 	@autoreleasepool {
 		NSWindow* window = (__bridge NSWindow *)windowRef;
 		window.contentMaxSize = NSMakeSize(width, height);
+		window.maxFullScreenContentSize = NSMakeSize(width, height);
 	}
 }
 
@@ -333,6 +335,8 @@ import "C"
 func init() {
 	// Darwin requires that UI operations happen on the main thread only.
 	runtime.LockOSThread()
+	// Register launch finished listener.
+	C.gio_init()
 }
 
 // AppKitViewEvent notifies the client of changes to the window AppKit handles.
@@ -534,7 +538,7 @@ func (w *window) SetCursor(cursor pointer.Cursor) {
 }
 
 func (w *window) EditorStateChanged(old, new editorState) {
-	if old.Selection.Range != new.Selection.Range || old.Snippet != new.Snippet {
+	if old.Selection.Range != new.Selection.Range || !areSnippetsConsistent(old.Snippet, new.Snippet) {
 		C.discardMarkedText(w.view)
 		w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
 	}
@@ -892,7 +896,7 @@ func gio_firstRectForCharacterRange(h C.uintptr_t, crng C.NSRange, actual C.NSRa
 	// Transform to NSView local coordinates (lower left origin, undo backing scale).
 	scale := 1. / float32(C.getViewBackingScale(w.view))
 	height := float32(C.viewHeight(w.view))
-	local := f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(scale, -scale)).Offset(f32.Pt(0, height))
+	local := f32.AffineId().Scale(f32.Pt(0, 0), f32.Pt(scale, -scale)).Offset(f32.Pt(0, height))
 	t := local.Mul(sel.Transform)
 	bounds := f32.Rectangle{
 		Min: t.Transform(sel.Pos.Sub(f32.Pt(0, sel.Ascent))),
@@ -1010,7 +1014,7 @@ func newWindow(win *callbacks, options []Option) {
 			w.ProcessEvent(DestroyEvent{Err: err})
 			return
 		}
-		window := C.gio_createWindow(w.view, C.CGFloat(cnf.Size.X), C.CGFloat(cnf.Size.Y), 0, 0, 0, 0)
+		window := C.gio_createWindow(w.view, C.CGFloat(cnf.Size.X), C.CGFloat(cnf.Size.Y))
 		// Release our reference now that the NSWindow has it.
 		C.CFRelease(w.view)
 		w.Configure(options)

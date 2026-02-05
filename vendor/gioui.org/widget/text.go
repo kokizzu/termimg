@@ -5,6 +5,7 @@ import (
 	"image"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"unicode"
 	"unicode/utf8"
@@ -17,7 +18,6 @@ import (
 	"gioui.org/op/paint"
 	"gioui.org/text"
 	"gioui.org/unit"
-	"golang.org/x/exp/slices"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -717,7 +717,7 @@ func (e *textView) MoveWord(distance int, selAct selectionAction) {
 		}
 		return r
 	}
-	for ii := 0; ii < words; ii++ {
+	for range words {
 		for r := next(); unicode.IsSpace(r) && !atEnd(); r = next() {
 			e.MoveCaret(direction, 0)
 			caret = e.closestToRune(e.caret.start)

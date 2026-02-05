@@ -4,49 +4,29 @@ import (
 	"image"
 	"math"
 	"runtime"
-	"sync"
 	"sync/atomic"
+
+	"github.com/kovidgoyal/go-parallel"
 )
 
-var maxProcs int64
+var max_procs atomic.Int64
 
 // SetMaxProcs limits the number of concurrent processing goroutines to the given value.
 // A value <= 0 clears the limit.
 func SetMaxProcs(value int) {
-	atomic.StoreInt64(&maxProcs, int64(value))
+	max_procs.Store(int64(value))
 }
 
-// parallel processes the data in separate goroutines.
-func parallel(start, stop int, fn func(<-chan int)) {
-	count := stop - start
-	if count < 1 {
-		return
+// Run the specified function in parallel over chunks from the specified range.
+// If the function panics, it is turned into a regular error.
+func run_in_parallel_over_range(num_procs int, f func(int, int), start, limit int) (err error) {
+	if num_procs <= 0 {
+		num_procs = runtime.GOMAXPROCS(0)
+		if mp := int(max_procs.Load()); mp > 0 {
+			num_procs = min(num_procs, mp)
+		}
 	}
-
-	procs := runtime.GOMAXPROCS(0)
-	limit := int(atomic.LoadInt64(&maxProcs))
-	if procs > limit && limit > 0 {
-		procs = limit
-	}
-	if procs > count {
-		procs = count
-	}
-
-	c := make(chan int, count)
-	for i := start; i < stop; i++ {
-		c <- i
-	}
-	close(c)
-
-	var wg sync.WaitGroup
-	for i := 0; i < procs; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			fn(c)
-		}()
-	}
-	wg.Wait()
+	return parallel.Run_in_parallel_over_range(num_procs, f, start, limit)
 }
 
 // absint returns the absolute value of i.
@@ -67,24 +47,6 @@ func clamp(x float64) uint8 {
 		return uint8(v)
 	}
 	return 0
-}
-
-func reverse(pix []uint8) {
-	if len(pix) <= 4 {
-		return
-	}
-	i := 0
-	j := len(pix) - 4
-	for i < j {
-		pi := pix[i : i+4 : i+4]
-		pj := pix[j : j+4 : j+4]
-		pi[0], pj[0] = pj[0], pi[0]
-		pi[1], pj[1] = pj[1], pi[1]
-		pi[2], pj[2] = pj[2], pi[2]
-		pi[3], pj[3] = pj[3], pi[3]
-		i += 4
-		j -= 4
-	}
 }
 
 func toNRGBA(img image.Image) *image.NRGBA {

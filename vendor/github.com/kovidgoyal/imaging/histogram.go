@@ -3,6 +3,8 @@ package imaging
 import (
 	"image"
 	"sync"
+
+	"github.com/kovidgoyal/imaging/nrgba"
 )
 
 // Histogram returns a normalized histogram of an image.
@@ -14,19 +16,20 @@ func Histogram(img image.Image) [256]float64 {
 	var histogram [256]float64
 	var total float64
 
-	src := newScanner(img)
-	if src.w == 0 || src.h == 0 {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	if w == 0 || h == 0 {
 		return histogram
 	}
+	src := nrgba.NewNRGBAScanner(img)
 
-	parallel(0, src.h, func(ys <-chan int) {
+	if err := run_in_parallel_over_range(0, func(start, limit int) {
 		var tmpHistogram [256]float64
 		var tmpTotal float64
-		scanLine := make([]uint8, src.w*4)
-		for y := range ys {
-			src.scan(0, y, src.w, y+1, scanLine)
+		scanLine := make([]uint8, w*4)
+		for y := start; y < limit; y++ {
+			src.Scan(0, y, w, y+1, scanLine)
 			i := 0
-			for x := 0; x < src.w; x++ {
+			for range w {
 				s := scanLine[i : i+3 : i+3]
 				r := s[0]
 				g := s[1]
@@ -38,14 +41,16 @@ func Histogram(img image.Image) [256]float64 {
 			}
 		}
 		mu.Lock()
-		for i := 0; i < 256; i++ {
+		for i := range 256 {
 			histogram[i] += tmpHistogram[i]
 		}
 		total += tmpTotal
 		mu.Unlock()
-	})
+	}, 0, h); err != nil {
+		panic(err)
+	}
 
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		histogram[i] = histogram[i] / total
 	}
 	return histogram

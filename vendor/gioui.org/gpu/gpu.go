@@ -15,6 +15,7 @@ import (
 	"image/color"
 	"math"
 	"reflect"
+	"slices"
 	"time"
 	"unsafe"
 
@@ -117,17 +118,17 @@ type drawState struct {
 }
 
 type pathOp struct {
-	off f32.Point
+	off image.Point
 	// rect tracks whether the clip stack can be represented by a
 	// pixel-aligned rectangle.
 	rect bool
 	// clip is the union of all
 	// later clip rectangles.
 	clip   image.Rectangle
-	bounds f32.Rectangle
+	bounds image.Rectangle
 	// intersect is the intersection of bounds and all
 	// previous clip bounds.
-	intersect f32.Rectangle
+	intersect image.Rectangle
 	pathKey   opKey
 	path      bool
 	pathVerts []byte
@@ -189,7 +190,7 @@ const (
 // imageOpData is the shadow of paint.ImageOp.
 type imageOpData struct {
 	src    *image.RGBA
-	handle interface{}
+	handle any
 	filter byte
 }
 
@@ -200,7 +201,7 @@ type linearGradientOpData struct {
 	color2 color.NRGBA
 }
 
-func decodeImageOp(data []byte, refs []interface{}) imageOpData {
+func decodeImageOp(data []byte, refs []any) imageOpData {
 	handle := refs[1]
 	if handle == nil {
 		return imageOpData{}
@@ -547,7 +548,7 @@ func newBlitter(ctx driver.Device) *blitter {
 	b.texUniforms = new(blitTexUniforms)
 	b.linearGradientUniforms = new(blitLinearGradientUniforms)
 	pipelines, err := createColorPrograms(ctx, gio.Shader_blit_vert, gio.Shader_blit_frag,
-		[3]interface{}{b.colUniforms, b.linearGradientUniforms, b.texUniforms},
+		[3]any{b.colUniforms, b.linearGradientUniforms, b.texUniforms},
 	)
 	if err != nil {
 		panic(err)
@@ -565,7 +566,7 @@ func (b *blitter) release() {
 	}
 }
 
-func createColorPrograms(b driver.Device, vsSrc shader.Sources, fsSrc [3]shader.Sources, uniforms [3]interface{}) (pipelines [2][3]*pipeline, err error) {
+func createColorPrograms(b driver.Device, vsSrc shader.Sources, fsSrc [3]shader.Sources, uniforms [3]any) (pipelines [2][3]*pipeline, err error) {
 	defer func() {
 		if err != nil {
 			for _, p := range pipelines {
@@ -822,7 +823,7 @@ func (r *renderer) packLayers(layers []opacityLayer) []opacityLayer {
 			layers[l.parent].clip = b.Union(l.clip)
 		}
 		if l.clip.Empty() {
-			layers = append(layers[:i], layers[i+1:]...)
+			layers = slices.Delete(layers, i, i+1)
 		}
 	}
 	// Pack layers.
@@ -871,7 +872,7 @@ func (r *renderer) drawLayers(layers []opacityLayer, ops []imageOp) {
 		r.drawOps(true, l.clip.Min.Mul(-1), l.clip.Size(), ops[l.opStart:l.opEnd])
 		sr := f32.FRect(v)
 		uvScale, uvOffset := texSpaceTransform(sr, f.size)
-		uvTrans := f32.Affine2D{}.Scale(f32.Point{}, uvScale).Offset(uvOffset)
+		uvTrans := f32.AffineId().Scale(f32.Point{}, uvScale).Offset(uvOffset)
 		// Replace layer ops with one textured op.
 		ops[l.opStart] = imageOp{
 			clip: l.clip,
@@ -901,16 +902,14 @@ func (d *drawOps) reset(viewport image.Point) {
 	d.opacityStack = d.opacityStack[:0]
 }
 
-func (d *drawOps) collect(root *op.Ops, viewport image.Point) {
-	viewf := f32.Rectangle{
-		Max: f32.Point{X: float32(viewport.X), Y: float32(viewport.Y)},
-	}
+func (d *drawOps) collect(root *op.Ops, viewportSize image.Point) {
+	viewport := image.Rectangle{Max: viewportSize}
 	var ops *ops.Ops
 	if root != nil {
 		ops = &root.Internal
 	}
 	d.reader.Reset(ops)
-	d.collectOps(&d.reader, viewf)
+	d.collectOps(&d.reader, viewport)
 }
 
 func (d *drawOps) buildPaths(ctx driver.Device) {
@@ -931,7 +930,7 @@ func (d *drawOps) newPathOp() *pathOp {
 	return &d.pathOpCache[len(d.pathOpCache)-1]
 }
 
-func (d *drawOps) addClipPath(state *drawState, aux []byte, auxKey opKey, bounds f32.Rectangle, off f32.Point) {
+func (d *drawOps) addClipPath(state *drawState, aux []byte, auxKey opKey, bounds image.Rectangle, off image.Point) {
 	npath := d.newPathOp()
 	*npath = pathOp{
 		parent:    state.cpath,
@@ -956,7 +955,9 @@ func (d *drawOps) addClipPath(state *drawState, aux []byte, auxKey opKey, bounds
 
 func (d *drawOps) save(id int, state f32.Affine2D) {
 	if extra := id - len(d.states) + 1; extra > 0 {
-		d.states = append(d.states, make([]f32.Affine2D, extra)...)
+		for range extra {
+			d.states = append(d.states, f32.AffineId())
+		}
 	}
 	d.states[id] = state
 }
@@ -970,13 +971,14 @@ func (k opKey) SetTransform(t f32.Affine2D) opKey {
 	return k
 }
 
-func (d *drawOps) collectOps(r *ops.Reader, viewport f32.Rectangle) {
-	var (
-		quads quadsOp
-		state drawState
-	)
+func (d *drawOps) collectOps(r *ops.Reader, viewport image.Rectangle) {
+	var quads quadsOp
+	state := drawState{
+		t: f32.AffineId(),
+	}
 	reset := func() {
 		state = drawState{
+			t:     f32.AffineId(),
 			color: color.NRGBA{A: 0xff},
 		}
 	}
@@ -1031,8 +1033,8 @@ loop:
 			var op ops.ClipOp
 			op.Decode(encOp.Data)
 			quads.key.outline = op.Outline
-			bounds := f32.FRect(op.Bounds)
-			trans, off := state.t.Split()
+			bounds := op.Bounds
+			trans, off := transformOffset(state.t)
 			if len(quads.aux) > 0 {
 				// There is a clipping path, build the gpu data and update the
 				// cache key such that it will be equal only if the transform is the
@@ -1043,11 +1045,11 @@ loop:
 					// Why is this not used for the offset shapes?
 					bounds = v.bounds
 				} else {
-					var pathData []byte
-					pathData, bounds = d.buildVerts(
+					newPathData, newBounds := d.buildVerts(
 						quads.aux, trans, quads.key.outline, quads.key.strokeWidth,
 					)
-					quads.aux = pathData
+					quads.aux = newPathData
+					bounds = newBounds.Round()
 					// add it to the cache, without GPU data, so the transform can be
 					// reused.
 					d.pathCache.put(quads.key, opCacheValue{bounds: bounds})
@@ -1055,6 +1057,7 @@ loop:
 			} else {
 				quads.aux, bounds, _ = d.boundsForTransformedRect(bounds, trans)
 				quads.key = opKey{Key: encOp.Key}
+				quads.key = quads.key.SetTransform(trans)
 			}
 			d.addClipPath(&state, quads.aux, quads.key, bounds, off)
 			quads = quadsOp{}
@@ -1078,21 +1081,21 @@ loop:
 			// Transform (if needed) the painting rectangle and if so generate a clip path,
 			// for those cases also compute a partialTrans that maps texture coordinates between
 			// the new bounding rectangle and the transformed original paint rectangle.
-			t, off := state.t.Split()
+			t, off := transformOffset(state.t)
 			// Fill the clip area, unless the material is a (bounded) image.
 			// TODO: Find a tighter bound.
-			inf := float32(1e6)
-			dst := f32.Rect(-inf, -inf, inf, inf)
+			inf := int(1e6)
+			dst := image.Rect(-inf, -inf, inf, inf)
 			if state.matType == materialTexture {
 				sz := state.image.src.Rect.Size()
-				dst = f32.Rectangle{Max: layout.FPt(sz)}
+				dst = image.Rectangle{Max: sz}
 			}
 			clipData, bnd, partialTrans := d.boundsForTransformedRect(dst, t)
-			cl := viewport.Intersect(bnd.Add(off))
+			bounds := viewport.Intersect(bnd.Add(off))
 			if state.cpath != nil {
-				cl = state.cpath.intersect.Intersect(cl)
+				bounds = state.cpath.intersect.Intersect(bounds)
 			}
-			if cl.Empty() {
+			if bounds.Empty() {
 				continue
 			}
 
@@ -1100,11 +1103,10 @@ loop:
 				// The paint operation is sheared or rotated, add a clip path representing
 				// this transformed rectangle.
 				k := opKey{Key: encOp.Key}
-				k.SetTransform(t) // TODO: This call has no effect.
+				k = k.SetTransform(t)
 				d.addClipPath(&state, clipData, k, bnd, off)
 			}
 
-			bounds := cl.Round()
 			mat := state.materialFor(bnd, off, partialTrans, bounds)
 
 			rect := state.cpath == nil || state.cpath.rect
@@ -1158,9 +1160,10 @@ func expandPathOp(p *pathOp, clip image.Rectangle) {
 	}
 }
 
-func (d *drawState) materialFor(rect f32.Rectangle, off f32.Point, partTrans f32.Affine2D, clip image.Rectangle) material {
+func (d *drawState) materialFor(rect image.Rectangle, off image.Point, partTrans f32.Affine2D, clip image.Rectangle) material {
 	m := material{
 		opacity: 1.,
+		uvTrans: f32.AffineId(),
 	}
 	switch d.matType {
 	case materialColor:
@@ -1177,7 +1180,7 @@ func (d *drawState) materialFor(rect f32.Rectangle, off f32.Point, partTrans f32
 		m.uvTrans = partTrans.Mul(gradientSpaceTransform(clip, off, d.stop1, d.stop2))
 	case materialTexture:
 		m.material = materialTexture
-		dr := rect.Add(off).Round()
+		dr := rect.Add(off)
 		sz := d.image.src.Bounds().Size()
 		sr := f32.Rectangle{
 			Max: f32.Point{
@@ -1194,7 +1197,7 @@ func (d *drawState) materialFor(rect f32.Rectangle, off f32.Point, partTrans f32
 		sr.Min.Y += float32(clip.Min.Y-dr.Min.Y) * sdy / dy
 		sr.Max.Y -= float32(dr.Max.Y-clip.Max.Y) * sdy / dy
 		uvScale, uvOffset := texSpaceTransform(sr, sz)
-		m.uvTrans = partTrans.Mul(f32.Affine2D{}.Scale(f32.Point{}, uvScale).Offset(uvOffset))
+		m.uvTrans = partTrans.Mul(f32.AffineId().Scale(f32.Point{}, uvScale).Offset(uvOffset))
 		m.data = d.image
 	}
 	return m
@@ -1315,7 +1318,7 @@ func (b *blitter) blit(mat materialType, fbo bool, col f32color.RGBA, col1, col2
 
 // newUniformBuffer creates a new GPU uniform buffer backed by the
 // structure uniformBlock points to.
-func newUniformBuffer(b driver.Device, uniformBlock interface{}) *uniformBuffer {
+func newUniformBuffer(b driver.Device, uniformBlock any) *uniformBuffer {
 	ref := reflect.ValueOf(uniformBlock)
 	// Determine the size of the uniforms structure, *uniforms.
 	size := ref.Elem().Type().Size()
@@ -1362,19 +1365,19 @@ func texSpaceTransform(r f32.Rectangle, bounds image.Point) (f32.Point, f32.Poin
 }
 
 // gradientSpaceTransform transforms stop1 and stop2 to [(0,0), (1,1)].
-func gradientSpaceTransform(clip image.Rectangle, off f32.Point, stop1, stop2 f32.Point) f32.Affine2D {
+func gradientSpaceTransform(clip image.Rectangle, off image.Point, stop1, stop2 f32.Point) f32.Affine2D {
 	d := stop2.Sub(stop1)
 	l := float32(math.Sqrt(float64(d.X*d.X + d.Y*d.Y)))
 	a := float32(math.Atan2(float64(-d.Y), float64(d.X)))
 
 	// TODO: optimize
 	zp := f32.Point{}
-	return f32.Affine2D{}.
-		Scale(zp, layout.FPt(clip.Size())).            // scale to pixel space
-		Offset(zp.Sub(off).Add(layout.FPt(clip.Min))). // offset to clip space
-		Offset(zp.Sub(stop1)).                         // offset to first stop point
-		Rotate(zp, a).                                 // rotate to align gradient
-		Scale(zp, f32.Pt(1/l, 1/l))                    // scale gradient to right size
+	return f32.AffineId().
+		Scale(zp, layout.FPt(clip.Size())).                     // scale to pixel space
+		Offset(zp.Sub(f32.FPt(off)).Add(layout.FPt(clip.Min))). // offset to clip space
+		Offset(zp.Sub(stop1)).                                  // offset to first stop point
+		Rotate(zp, a).                                          // rotate to align gradient
+		Scale(zp, f32.Pt(1/l, 1/l))                             // scale gradient to right size
 }
 
 // clipSpaceTransform returns the scale and offset that transforms the given
@@ -1518,37 +1521,38 @@ func decodeToOutlineQuads(qs *quadSplitter, tr f32.Affine2D, pathData []byte) {
 }
 
 // create GPU vertices for transformed r, find the bounds and establish texture transform.
-func (d *drawOps) boundsForTransformedRect(r f32.Rectangle, tr f32.Affine2D) (aux []byte, bnd f32.Rectangle, ptr f32.Affine2D) {
-	if isPureOffset(tr) {
-		// fast-path to allow blitting of pure rectangles
-		_, _, ox, _, _, oy := tr.Elems()
-		off := f32.Pt(ox, oy)
-		bnd.Min = r.Min.Add(off)
-		bnd.Max = r.Max.Add(off)
+func (d *drawOps) boundsForTransformedRect(r image.Rectangle, tr f32.Affine2D) (aux []byte, bnd image.Rectangle, ptr f32.Affine2D) {
+	ptr = f32.AffineId()
+	if tr == f32.AffineId() {
+		// fast-path to allow blitting of pure rectangles.
+		bnd = r
 		return
 	}
 
 	// transform all corners, find new bounds
 	corners := [4]f32.Point{
-		tr.Transform(r.Min), tr.Transform(f32.Pt(r.Max.X, r.Min.Y)),
-		tr.Transform(r.Max), tr.Transform(f32.Pt(r.Min.X, r.Max.Y)),
+		tr.Transform(f32.FPt(r.Min)), tr.Transform(f32.Pt(float32(r.Max.X), float32(r.Min.Y))),
+		tr.Transform(f32.FPt(r.Max)), tr.Transform(f32.Pt(float32(r.Min.X), float32(r.Max.Y))),
 	}
-	bnd.Min = f32.Pt(math.MaxFloat32, math.MaxFloat32)
-	bnd.Max = f32.Pt(-math.MaxFloat32, -math.MaxFloat32)
+	fBounds := f32.Rectangle{
+		Min: f32.Pt(math.MaxFloat32, math.MaxFloat32),
+		Max: f32.Pt(-math.MaxFloat32, -math.MaxFloat32),
+	}
 	for _, c := range corners {
-		if c.X < bnd.Min.X {
-			bnd.Min.X = c.X
+		if c.X < fBounds.Min.X {
+			fBounds.Min.X = c.X
 		}
-		if c.Y < bnd.Min.Y {
-			bnd.Min.Y = c.Y
+		if c.Y < fBounds.Min.Y {
+			fBounds.Min.Y = c.Y
 		}
-		if c.X > bnd.Max.X {
-			bnd.Max.X = c.X
+		if c.X > fBounds.Max.X {
+			fBounds.Max.X = c.X
 		}
-		if c.Y > bnd.Max.Y {
-			bnd.Max.Y = c.Y
+		if c.Y > fBounds.Max.Y {
+			fBounds.Max.Y = c.Y
 		}
 	}
+	bnd = fBounds.Round()
 
 	// build the GPU vertices
 	l := len(d.vertCache)
@@ -1562,21 +1566,28 @@ func (d *drawOps) boundsForTransformedRect(r f32.Rectangle, tr f32.Affine2D) (au
 
 	// establish the transform mapping from bounds rectangle to transformed corners
 	var P1, P2, P3 f32.Point
-	P1.X = (corners[1].X - bnd.Min.X) / (bnd.Max.X - bnd.Min.X)
-	P1.Y = (corners[1].Y - bnd.Min.Y) / (bnd.Max.Y - bnd.Min.Y)
-	P2.X = (corners[2].X - bnd.Min.X) / (bnd.Max.X - bnd.Min.X)
-	P2.Y = (corners[2].Y - bnd.Min.Y) / (bnd.Max.Y - bnd.Min.Y)
-	P3.X = (corners[3].X - bnd.Min.X) / (bnd.Max.X - bnd.Min.X)
-	P3.Y = (corners[3].Y - bnd.Min.Y) / (bnd.Max.Y - bnd.Min.Y)
+	P1.X = (corners[1].X - fBounds.Min.X) / (fBounds.Max.X - fBounds.Min.X)
+	P1.Y = (corners[1].Y - fBounds.Min.Y) / (fBounds.Max.Y - fBounds.Min.Y)
+	P2.X = (corners[2].X - fBounds.Min.X) / (fBounds.Max.X - fBounds.Min.X)
+	P2.Y = (corners[2].Y - fBounds.Min.Y) / (fBounds.Max.Y - fBounds.Min.Y)
+	P3.X = (corners[3].X - fBounds.Min.X) / (fBounds.Max.X - fBounds.Min.X)
+	P3.Y = (corners[3].Y - fBounds.Min.Y) / (fBounds.Max.Y - fBounds.Min.Y)
 	sx, sy := P2.X-P3.X, P2.Y-P3.Y
 	ptr = f32.NewAffine2D(sx, P2.X-P1.X, P1.X-sx, sy, P2.Y-P1.Y, P1.Y-sy).Invert()
 
-	return
+	return aux, bnd, ptr
 }
 
-func isPureOffset(t f32.Affine2D) bool {
-	a, b, _, d, e, _ := t.Elems()
-	return a == 1 && b == 0 && d == 0 && e == 1
+// transformOffset a transform into two parts, one which is pure integer offset
+// and the other representing the scaling, shearing and rotation and fractional
+// offset.
+func transformOffset(t f32.Affine2D) (f32.Affine2D, image.Point) {
+	sx, hx, ox, hy, sy, oy := t.Elems()
+	iox, fox := math.Modf(float64(ox))
+	ioy, foy := math.Modf(float64(oy))
+	ft := f32.NewAffine2D(sx, hx, float32(fox), hy, sy, float32(foy))
+	ip := image.Pt(int(iox), int(ioy))
+	return ft, ip
 }
 
 func newShaders(ctx driver.Device, vsrc, fsrc shader.Sources) (vert driver.VertexShader, frag driver.FragmentShader, err error) {
