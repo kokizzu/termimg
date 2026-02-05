@@ -64,8 +64,17 @@ func (m *Image) Draw() {
 	// m.CellView.Draw() // area not drawn until tcell.Screen.Sync() is called
 
 	mdl := m.CellView.GetModel()
-	x, y, _, _ := mdl.GetCursor()
-	w, h := mdl.GetBounds()
+	// methods provided by github.cum/gdamore/tcells/v2/views.{CellModel,CellModelNew}
+	mdlBC, okBC := mdl.(interface {
+		GetBounds() (int, int)
+		GetCursor() (int, int, bool, bool)
+	})
+	if !okBC {
+		_ = logx.IsErr(errors.New(`tcell model doesn't provide GetBounds() and GetCursor() methods`), m.term, slog.LevelError)
+		return
+	}
+	x, y, _, _ := mdlBC.GetCursor()
+	w, h := mdlBC.GetBounds()
 	bounds := image.Rect(x, y, x+w, y+h)
 	if !bounds.Eq(m.Canvas.CellArea()) {
 		logx.Error(`bounds changed`, m.term, "canvas-bounds", m.Canvas.CellArea(), "tcell-bounds", bounds)
@@ -89,13 +98,11 @@ func (m *Image) Close() error {
 	if m == nil {
 		return nil
 	}
+	defer func() { m = nil }()
 	if m.Canvas == nil {
-		m = nil
 		return nil
 	}
-	err := m.Canvas.Close()
-	m = nil
-	return logx.Err(err, m.term, slog.LevelError)
+	return logx.Err(m.Canvas.Close(), m.term, slog.LevelError)
 }
 
 // copied from github.com/gdamore/tcell/v2/views/textarea.go (Apache-2.0 license)
