@@ -6,8 +6,8 @@ import (
 
 	"github.com/srlehn/termimg/internal/consts"
 	"github.com/srlehn/termimg/internal/errors"
-	"github.com/srlehn/termimg/resize/xdraw"
 	"github.com/srlehn/termimg/resize/rez"
+	"github.com/srlehn/termimg/resize/xdraw"
 	"github.com/srlehn/termimg/term"
 )
 
@@ -26,12 +26,9 @@ repeat:
 	switch it := im.(type) {
 	case *image.YCbCr, *image.RGBA, *image.NRGBA, *image.Gray:
 		// use SIMD assembly if possible
-		imgRet, err := rez.Resizer{}.Resize(im, size)
+		imgRet, err := (&rez.Resizer{}).Resize(im, size)
 		if err != nil {
-			imgRet, err = xdraw.ApproxBiLinear().Resize(img, size)
-		}
-		if err != nil {
-			return nil, err
+			break
 		}
 		return imgRet, nil
 	case *term.Image:
