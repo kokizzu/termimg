@@ -47,6 +47,7 @@ func (t *TTYUV) UVTerminal() *uv.Terminal {
 
 // rawCapturingReader wraps io.Reader to capture raw data before UV parsing
 type rawCapturingReader struct {
+	// TODO rework after uv changes? reader to type *os.File?
 	reader    io.Reader
 	rawDataCh chan []byte
 }
@@ -66,6 +67,50 @@ func (r *rawCapturingReader) Read(p []byte) (n int, err error) {
 		}
 	}
 	return n, err
+}
+
+func (r *rawCapturingReader) Write(p []byte) (n int, err error) {
+	if r == nil || r.reader == nil {
+		return 0, nil
+	}
+	writer, ok := r.reader.(io.Writer)
+	if !ok {
+		return 0, nil
+	}
+	return writer.Write(p)
+}
+
+func (r *rawCapturingReader) Close() error {
+	if r == nil || r.reader == nil {
+		return nil
+	}
+	closer, ok := r.reader.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}
+
+func (r *rawCapturingReader) Name() string {
+	if r == nil || r.reader == nil {
+		return `/dev/tty` // TODO
+	}
+	namer, ok := r.reader.(interface{ Name() string })
+	if !ok {
+		return `/dev/tty` // TODO
+	}
+	return namer.Name()
+}
+
+func (r *rawCapturingReader) Fd() uintptr {
+	if r == nil || r.reader == nil {
+		return 0
+	}
+	fder, ok := r.reader.(interface{ Fd() uintptr })
+	if !ok {
+		return 0
+	}
+	return fder.Fd()
 }
 
 func New(ttyFile string) (*TTYUV, error) {
@@ -89,7 +134,7 @@ func New(ttyFile string) (*TTYUV, error) {
 			reader:    os.Stdin,
 			rawDataCh: tty.rawDataCh,
 		}
-		uvTerm = uv.NewTerminal(rawReader, os.Stdout, os.Environ())
+		uvTerm = uv.NewTerminal(uv.NewConsole(rawReader, os.Stdout, os.Environ()), nil)
 		if uvTerm == nil {
 			cancel()
 			return nil, errors.New("failed to create UV terminal")
@@ -112,7 +157,8 @@ func New(ttyFile string) (*TTYUV, error) {
 			rawDataCh: tty.rawDataCh,
 		}
 		// Create UV terminal with raw capturing reader
-		uvTerm = uv.NewTerminal(rawReader, outFile, os.Environ())
+		uvTerm = uv.NewTerminal(uv.NewConsole(rawReader, outFile, os.Environ()), nil)
+
 		if uvTerm == nil {
 			inFile.Close()
 			cancel()
@@ -137,7 +183,22 @@ func New(ttyFile string) (*TTYUV, error) {
 	go tty.processRawData()
 
 	// Start monitoring events immediately to not miss anything
-	go func() { _ = tty.uvTerminal.StreamEvents(tty.eventCtx, tty.eventCh) }()
+	go func() {
+		for {
+			select {
+			case ev, ok := <-tty.uvTerminal.Events():
+				if !ok {
+					return
+				}
+				select {
+				case tty.eventCh <- ev:
+				default:
+				}
+			case <-tty.eventCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// Process events in background (for window size, etc.)
 	go tty.processEvents()
@@ -157,13 +218,16 @@ func (t *TTYUV) processEvents() {
 			// Send resize event with current cell and pixel sizes
 			t.sendResizeEvent()
 
-		case uv.WindowPixelSizeEvent:
+		case uv.PixelSizeEvent:
 			t.mu.Lock()
 			t.pixelW, t.pixelH = ev.Width, ev.Height
 			t.mu.Unlock()
 
 			// Send resize event with current cell and pixel sizes
 			t.sendResizeEvent()
+
+			// TODO is uv.MultiEvent split up?
+
 		default:
 			// All other events (KeyPress, CursorPosition, DeviceAttributes, etc.)
 			// are ignored because we get the raw data via processRawData
@@ -207,13 +271,8 @@ func (t *TTYUV) Write(b []byte) (n int, err error) {
 	}
 
 	// Write to UV terminal
-	n, err = t.uvTerminal.WriteString(string(b))
+	n, err = t.uvTerminal.Write(b)
 	if err != nil {
-		return n, errors.New(err)
-	}
-
-	// Flush output
-	if err := t.uvTerminal.Flush(); err != nil {
 		return n, errors.New(err)
 	}
 
@@ -266,8 +325,10 @@ func (t *TTYUV) Close() error {
 	}()
 	if t.uvTerminal != nil {
 		// TODO ioclt fails currently
-		err := t.uvTerminal.Shutdown(context.Background())
-		if err != nil {
+		if err := t.uvTerminal.Stop(); err != nil { // non-blocking
+			log.Println(err)
+		}
+		if err := t.uvTerminal.Wait(); err != nil {
 			log.Println(err)
 		}
 		t.uvTerminal = nil
